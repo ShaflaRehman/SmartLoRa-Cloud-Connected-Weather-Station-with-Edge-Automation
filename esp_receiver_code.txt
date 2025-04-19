@@ -1,0 +1,148 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <WiFi.h>
+#include <ThingSpeak.h>
+
+// Define WiFi credentials
+const char* ssid = "Redmi 10A";
+const char* password = "password";
+
+// ThingSpeak credentials
+unsigned long channelID = 2796602;
+const char* readAPIKey = "1OXJ2QJ4GR39IODW";
+const char* writeAPIKey = "D6H6XHG9LMQ2FIAF"; 
+
+// Define the pins used by the LoRa module
+#define ss 5
+#define rst 14
+#define dio0 2
+
+// Define the relay pin
+#define RELAY_PIN 15
+
+WiFiClient client;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("LoRa Receiver Starting...");
+
+  // Initialize the relay pin as OUTPUT
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH); // Set to HIGH to turn the relay off (active LOW)
+
+  // Connect to WiFi
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting...");
+  }
+  Serial.println("WiFi connected!");
+
+  // Initialize ThingSpeak
+  ThingSpeak.begin(client);
+
+  // Initialize LoRa with pins
+  LoRa.setPins(ss, rst, dio0);
+
+  // Set frequency to 433 MHz (adjust according to your module)
+  while (!LoRa.begin(433E6)) {
+    Serial.println("LoRa initialization failed. Retrying...");
+    delay(500);
+  }
+
+  LoRa.setSyncWord(0xF3); // Set sync word (must match with the transmitter)
+  Serial.println("LoRa Initialized Successfully!");
+  Serial.println("Waiting for packets...");
+}
+
+void loop() {
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    Serial.println("Packet received!");
+
+    char receivedData[256]; // Fixed-size buffer for incoming data
+    int index = 0;
+
+    while (LoRa.available() && index < 255) {
+      receivedData[index++] = (char)LoRa.read();
+    }
+    receivedData[index] = '\0'; // Null-terminate the string
+
+    // Print the received data
+    Serial.print("Received Data: ");
+    Serial.println(receivedData);
+
+    float temperature = 0, humidity = 0;
+    int raindrop = 0;
+    int parsed = sscanf(receivedData, "Temperature: %f°C, Humidity: %f%%, Rain Value: %d", &temperature, &humidity, &raindrop);
+
+    if (parsed == 3) {
+      Serial.print("Temperature: ");
+      Serial.print(temperature);
+      Serial.println("°C");
+
+      Serial.print("Humidity: ");
+      Serial.print(humidity);
+      Serial.println("%");
+
+      Serial.print("Raindrop Level: ");
+      Serial.println(raindrop);
+
+      // Determine the weather condition
+      int weather = -1; // Default value if no condition matches
+      if (temperature > 15 ) {
+        weather = 0; // Sunny
+        Serial.println("Weather: Sunny");
+      } else if (raindrop < 3000) {
+        weather = 1; // Rainy
+        Serial.println("Weather: Rainy");
+      } else if (humidity > 50) {
+        weather = 2; // Cloudy
+        Serial.println("Weather: Cloudy");
+      } else {
+        Serial.println("Weather: Unclear conditions.");
+      }
+
+      // Upload weather to ThingSpeak Field 4
+      ThingSpeak.setField(4, weather);
+      int responseCode = ThingSpeak.writeFields(channelID, writeAPIKey);
+      if (responseCode == 200) {
+        Serial.println("Weather data uploaded successfully.");
+      } else {
+        Serial.print("Failed to upload weather data. Error: ");
+        Serial.println(responseCode);
+      }
+
+      // Control the relay based on temperature value
+      if (temperature > 15) {
+        Serial.println("Bohut Garmi hai! Turning on relay.");
+        digitalWrite(RELAY_PIN, LOW); // Turn on relay (active LOW)
+      } else {
+        Serial.println("Thand hai! Turning off relay.");
+        digitalWrite(RELAY_PIN, HIGH); // Turn off relay
+      }
+    } else {
+      Serial.println("Failed to parse received data. Check format.");
+    }
+
+    // Read Field 5 data from ThingSpeak
+    int field5Value = ThingSpeak.readIntField(channelID, 5, readAPIKey);
+    if (field5Value == 1) {
+      Serial.println("ThingSpeak Command: Turn ON Relay.");
+      digitalWrite(RELAY_PIN, LOW); // Turn on relay
+    } else if (field5Value == 0) {
+      Serial.println("ThingSpeak Command: Turn OFF Relay.");
+      digitalWrite(RELAY_PIN, HIGH); // Turn off relay
+    } else {
+      Serial.println("ThingSpeak Command: Invalid data.");
+    }
+
+    // Print Signal Strength (RSSI)
+    int rssi = LoRa.packetRssi();
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.println(rssi);
+
+    delay(5000); // Optional: Delay for readability
+  }
+}
